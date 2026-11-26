@@ -1,0 +1,136 @@
+﻿GPU-UNLOCK · Windows 开机自动挡 v3.2.2 · 整合包 —— 安装说明
+====================================================
+
+这是一个"关机时禁用显卡、开机时在 NVIDIA 驱动绑定之前解锁"的小工具。
+解锁后张量核半速限制解除，实测 BF16 从 56.33 升到 116.79 TFLOPS（约 2.07 倍），
+不需要改 VBIOS、不需要换驱动、不需要补丁版驱动，装完正常开关机就行。
+
+
+一、这个包里有什么（一个包带齐，不用再下别的东西）
+--------------------
+本目录（GPU-UNLOCK-v3.2.2-full）= 整合包，解压即用：
+   - gpu_unlock.exe / gpuunlock.sys        解锁程序与内核驱动（已签名，测试签名）
+   - gpu-unlock\610.43.03\                 固件资产（GA102 五件）
+   - gpuunlock-test.cer                    自签名证书（第 2 步脚本会自动信任它）
+   - GPU-panel-v3.bat / gpu-panel-v3.ps1   图形面板（双击打开，右上角 ? 有使用说明）
+   - boot-unlock.ps1 / gpu-disable.ps1 / rescue-enable.ps1   三个开机/关机任务脚本
+   - desk-fix.ps1                          桌面图标修复（重启后图标变小 / 右键失灵时用）
+   - enable-test-signing.ps1               一键装证书 + 开启测试签名
+   - installer\install.ps1                 安装器（注册四个计划任务）
+   - installer\uninstall.ps1               卸载器
+   - INSTALL.bat                           一键安装入口（会自动提权）
+   - source\                               完整源码（GPL-2.0 要求随二进制提供）
+
+（只想自己编译、只要代码的，直接用 source\ 目录，或用 installer\extract-assets.py
+  从 NVIDIA 官方源码现场抽固件。）
+
+
+二、装之前必须满足（缺一个都装不成）
+----------------------------------
+[ ] Windows 10 / 11 64 位
+[ ] 显卡是 GA102：RTX 3090 Ti / 3090 / 3080 Ti / 3080 / A6000（其它型号见第五节）
+[ ] 显示器接在这张 N 卡上（不能只靠核显/远程桌面）
+[ ] BIOS 里已关闭 Secure Boot
+[ ] 能用管理员账号登录
+
+
+三、安装步骤（约 10 分钟 + 两次重启）
+----------------------------------
+第 1 步：把整个文件夹放到一个固定位置，例如  D:\GPU-UNLOCK\
+         （路径里不要有空格以外的怪字符；装完不要移动/删除这个文件夹，
+           三个计划任务都指向这里的绝对路径）
+
+第 2 步：右键"以管理员身份运行"  enable-test-signing.ps1
+         它自己做完两件事，不用你手打命令：
+           ① 把包里的 gpuunlock-test.cer 装进「本地计算机 → 受信任的根证书颁发机构
+              + 受信任的发布者」（脚本会按证书指纹逐个验证装没装上）
+           ② bcdedit /set testsigning on
+         看到下面两行才算真的成功：
+             [LocalMachine\Root] OK, thumbprint present
+             [LocalMachine\TrustedPublisher] OK, thumbprint present
+             testsigning        Yes
+         若显示 FAILED → 说明不是管理员权限，右键重跑一次。
+         （脚本若提示 signing certificate not found，说明你手上的还是旧版脚本，
+           用签名修复包 signing-hotfix.zip 里的同名文件覆盖即可。）
+
+第 3 步：重启一次。开机后桌面右下角会显示"测试模式"水印，这是正常的，
+         说明测试签名已生效。
+
+第 4 步：管理员运行 installer\install.ps1
+         （或双击 INSTALL.bat）
+         它会先体检，9 项都 [ OK ] 之后注册四个计划任务：
+             GpuUnlockBoot        开机触发 → 在驱动绑定前解锁
+             GpuUnlockBootRescue  开机 5 分钟后兜底 → 显卡没起来就强行启用
+             GpuUnlockOff         关机时（事件 1074）→ 把显卡禁用，保证下次开机是冷态
+             GpuUnlockDeskFix     登录 20 秒后 → 把桌面图标恢复成你设定的大小（顺手修图标层）
+         装完它会顺手把桌面图标设成 64px；想改大小，打开 GPU-panel-v3.bat
+         点第二排的「图标 大 + / 图标 小 −」，点一下就会记住。
+
+第 5 步：验证。正常"关机"（不要用重启），再开机。
+         - 开机后 30-60 秒显示可能是基础分辨率，随后恢复，这是正常的
+         - 进桌面后双击 GPU-panel-v3.bat，顶部应显示绿色"已解锁"
+         - 或点"测一下当前算力"：BF16 约 116 TFLOPS = 已解锁，约 56 = 没解锁
+
+日志都在：C:\ProgramData\GpuUnlock\
+    boot-unlock-*.log           开机解锁过程与结果
+    disable-at-shutdown.log     关机时禁用显卡的记录
+    install-check.log           安装体检
+
+
+四、卸载 / 恢复原样
+------------------
+1) 管理员运行 installer\uninstall.ps1（加 -KeepTasks 只停用不删除）
+2) 想彻底清掉水印：bcdedit /set testsigning off 后重启
+   （注意：关掉测试签名后驱动就加载不了，解锁自然失效）
+
+
+五、支持范围（上游 Zagitta/gpu-unlock 的口径）
+--------------------------------------------
+Ampere RTX 30 系：稳定（本包在 GA102 的 3090 Ti 上真机验证）
+Ada RTX 40 系    ：实验性，建议先小范围试
+Turing RTX 20 系 ：实验性
+Blackwell RTX 50 ：不支持
+
+固件按芯片型号分：本包自带的是 ga102 一套。
+3070 / 3060 Ti（ga104）、3060（ga106）需要在 NVIDIA 开源内核模块源码里找到对应芯片（实测没有，
+用 installer\extract-assets.py --list 可自己复核），只能从驱动里挖固件，本包没做 —— 所以 3060 用这套走不通，别白折腾。
+
+
+六、常见问题
+-----------
+Q: 装完没解锁，面板显示"未解锁"？
+A: 看 C:\ProgramData\GpuUnlock\boot-unlock-*.log：
+   - "NOT COLD: unlock skipped" → 关机钩子没生效，这次是热启动，重新"关机"再开一次
+   - "cannot start the gpuunlock driver" → 测试签名没生效或证书没信任，回到第二、三步重跑
+   - "error=-138" → 卡已经被驱动初始化过，等于热启动，同样重新关机再来
+
+Q: 屏幕黑了不回来？
+A: 等 2 分钟，兜底任务会在开机 5 分钟后强行启用显卡。
+   还不行就长按电源键重启——解锁值在易失寄存器里，重启后需要重新解锁。
+
+Q: 会不会伤显卡？
+A: 只写两个速度选择寄存器 + 一次 PCIe FLR，不改 VBIOS、不改电压、不改功耗限制。
+   风险是"显示黑一下"，所以本包带了两道自救（开机兜底 + 面板看门狗）。
+
+
+七、许可
+--------
+本项目 GPL-2.0（见 LICENSE / NOTICE.md）。
+最源头：Zagitta/gpu-unlock（Linux 内核模块，整套解锁技术的原始出处，GPL-2.0）
+        https://github.com/Zagitta/gpu-unlock
+Windows 分支版：windows-GPU-UNLOCK（EFI 预启动解锁路线，同一技术脉络）
+        https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK
+
+固件资产不随包再分发：由 NVIDIA 开源内核模块源码现场抽取，
+详见 installer\extract-assets.py 与 installer\README.md。
+
+作者：X-WIDE · B 站 space.bilibili.com/374064919 · github.com/XWIDE · xiupk@sina.com.cn
+
+---
+
+v3.2.2 变化（桌面图标，2026-11-05）：
+   - 登录任务 GpuUnlockDeskFix 只在登录后 45 秒跑一次（等 360 桌面助手这类软件先起来），不做定时循环。
+   - 这一次同时修四件事：图标大小 / 桌面图标层 / 被 360 关掉的「显示桌面图标」(HideIcons) / 跑到屏幕外的图标自动搬回可视区。
+   - desk-fix.ps1 默认不碰 360 桌面助手；确实想停它才手动加 -Stop360。
+   - 只看不动：powershell -File desk-fix.ps1 -Reflow -CheckOnly
+   - 历史：v3.2.1 曾用「30 分钟每分钟复查」，v3.2.2 起改成只跑一次，不再常驻检查。

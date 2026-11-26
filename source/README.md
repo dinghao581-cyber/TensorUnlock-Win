@@ -1,0 +1,118 @@
+﻿# GPU 解锁 · Windows 开机自动挡
+
+**中文** | [English](README.en.md)
+
+让 Ampere（RTX 30 系）显卡在 Windows 上打开被厂商锁住的半速张量核：**BF16/FP16 算力约 ×2**。
+不刷 VBIOS、不换驱动、不用 U 盘、不改引导；解锁发生在每次开机、NVIDIA 驱动绑定显卡之前。
+
+实测（RTX 3090 Ti / 驱动 617.42 / Windows 10 19041 / 3 次取中位）：
+
+| | 未解锁 | 解锁后 |
+|---|---|---|
+| BF16 TFLOPS | 56.33 | **116.79** |
+| FP16 TFLOPS | 57.00 | 117.08 |
+| 倍数 | 1.00× | **2.07×** |
+
+![界面：主面板 · 帮助页 · 出处与致谢](docs/images/ui-panel-v3.1.png)
+
+---
+
+## 支持哪些卡（先看这里，别白折腾）
+
+| 芯片 | 代表型号 | 状态 |
+|---|---|---|
+| **GA102** | 3090 Ti / 3090 / 3080 Ti / 3080 / A6000 | ✅ **真机验证通过**（本仓库就是在这张卡上跑通的） |
+| GA104 / GA106 / GA107 | 3070 / 3060 Ti / **3060** | ❌ **做不了** —— 原因见下，别再试 |
+| Ada（40 系） | 4070 / 4080 / 4090 … | ⚠️ 上游标实验性，本仓库未验证 |
+| Blackwell（50 系） | 50xx | ❌ 上游不支持 |
+
+### 为什么 3060 / 3070 做不了（2026-11-01 实测，不是猜的）
+
+解锁要在驱动绑定显卡**之前**自己把 GSP 启动起来，这就必须拿到**该芯片自己的 BooterLoad 数据**。三个来源都查过了：
+
+1. **NVIDIA 开源内核模块源码**（`NVIDIA-kernel-module-source-610.43.03.tar.xz`，3868 个文件）：这份数据只有 5 个芯片 —— `TU116 / TU102 / AD102 / GA102 / GA100`，**没有 GA104 / GA106 / GA107**。
+2. **官方驱动安装包**（`NVIDIA-Linux-x86_64-610.43.03.run`，440 MB，解开 1189 个文件）：里面只有通用固件 `firmware/gsp_ga10x.bin`（84 MB）、`gsp_tu10x.bin`、`ucodes_ga10x.bin`、`ucodes_tu10x.bin`；名字里带 `ga104/ga106/ga107` 的成员 **0 个**，带 `booter` 的成员 **0 个**。
+3. **上游抽取脚本**（`firmware/extract_gsp.py`）：也只从 `.run` 里取那两个通用固件，按芯片的启动数据一律来自开源模块源码。
+
+通用固件替代不了：`gsp_ga10x.bin` 是 GSP 的**运行时**固件，而**启动** GSP 需要按芯片区分的 booter。所以 3060 上不是"配置不对"、也不是"还没适配"，是**这份数据根本不存在**。
+
+> 3060 / 3070 / 3060 Ti 用户：不用下载本仓库任何文件去试，加载了也没有对应固件，只会白折腾。
+
+---
+
+## 这个仓库是什么
+
+上游 [Zagitta/gpu-unlock](https://github.com/Zagitta/gpu-unlock) 是 Linux 内核模块，
+在 initramfs 里、驱动绑定前解锁显卡。这个东西是它的 **Windows 移植 + 开机调度层**：
+
+1. `windows/` —— 用户态命令行 `gpu_unlock.exe`（UAC、服务注册、设备 I/O、结果报告）
+2. `kernel/gpu_unlock/` —— 共享解锁引擎（BAR 映射、寄存器读写、PCIe FLR、GSP 事务）
+3. `windows/driver/` —— 内核辅助驱动 `gpuunlock.sys`（只做机械动作：映射 BAR、DMA、配置空间、FLR）
+4. `installer/` —— 三个 Windows 计划任务 + 图形面板，把「开机解锁」变成无人值守
+
+**为什么必须在开机时做**：解锁＝往两个易失选择器写值（`SS0 (+0x82381c)=0x88888888`、`SS1 (+0x823820)=0x8`）+ 一次 PCIe FLR。
+等 Windows 起来、`nvlddmkm` 接管后，GSP 固件已经在跑，写入被拒：
+`unlock_transaction_gfw error=-138 ... firmware_started=0`。这是运行中"一键解锁"永远失败的唯一原因。
+
+## 目录
+
+| 路径 | 内容 |
+|---|---|
+| `docs/` | 上游文档（Linux 侧历史、原理图） |
+| `firmware/` | `extract_boot_assets.py`：从 NVIDIA 生成源码造 Booter/GSP boot 资产 |
+| `kernel/gpu_unlock/` | 解锁引擎 C 源码（`unlock_610.c`、`gfw_eval.c`、`layout_610.c` …） |
+| `windows/` | CLI、HAL、驱动源码、Linux API shim |
+| `tests/` | 引擎单元测试（mock HAL） |
+| `installer/` | **普通用户看这里**：`README.md` 方案说明、`安装.ps1`、`卸载.ps1`、`extract-assets.py`、`scripts/` 调度脚本 |
+| `licenses/` | 第三方许可证全文 |
+| `tools_*.ps1` | 构建脚本（驱动 / exe / 签名 / 暂存发布树） |
+
+## 构建
+
+需要 **Visual Studio Build Tools 2022 + Windows Driver Kit 10.0.22000.0**：
+
+```powershell
+$env:GU_KITS = 'C:\Program Files (x86)\Windows Kits\10'
+powershell -File tools_build_drv.ps1    # -> build\gpuunlock.sys
+powershell -File tools_build_exe.ps1    # -> build\gpu_unlock.exe
+powershell -File tools_sign.ps1         # 自签名（需 testsigning）
+```
+
+## 安装（普通用户）
+
+见 [`installer/README.md`](installer/README.md)。三步：关 Secure Boot → 开测试签名 → 跑 `安装.ps1`，然后正常关机再开机。
+
+## 状态
+
+| 项 | 状态 |
+|---|---|
+| GA102（3090 Ti / 3090 / 3080 Ti / 3080 / A6000） | **真机验证通过**（冷启动路径 + 三任务全自动闭环） |
+| GA102 固件资产可复现 | **验证通过**（`extract-assets.py` 从官方 610.43.03 源码抽出的 3 个 blob 与发布版逐字节相同） |
+| ga104 / ga106 / ga107（3070 / 3060 Ti / 3060） | ❌ 做不了 —— 证据见上面「支持哪些卡」一节 |
+| Ada（40 系） | 上游标实验性；本仓库未验证 |
+| Blackwell（50 系） | 不支持 |
+| 多卡 / 睡眠恢复 | 未实现 |
+
+## 装完右下角出现「测试模式」水印，正常吗？
+
+**正常，每个装这个包的人都会有**，不是装坏了，也不是病毒。
+
+- 原因：`gpuunlock.sys` 是自签名驱动，Windows 只允许「测试签名模式」加载自签名驱动，所以安装第一步必须 `bcdedit /set testsigning on`。开了它，Windows 就在桌面右下角画「测试模式 / Windows 10 专业版 / Build …」三行字。
+- **去不掉**：只要还开着测试签名，这个水印就一直画在桌面上；改注册表、换壁纸、`PaintDesktopVersion=0` 都管不住（实测该值本来就是 0，水印照样在）。
+- **关掉会怎样**：`bcdedit /set testsigning off` 后水印消失，但自签名驱动就加载不了 → 解锁直接失效。所以不能为了好看关它。
+- **想彻底干净的唯一办法**：给驱动做正式签名（EV 代码签名证书 + Microsoft attestation 提交，几百美元/年 + 几天审核），之后 `testsigning off`，水印消失且解锁照跑。这属于成本与账号问题，本仓库不提供证书。
+
+## 更新记录
+
+- **v3.2.2（2026-11-05）**：桌面修复改成「登录后跑一次就够」——登录后 45 秒（等 360 桌面助手先起来）一次性做四件事：恢复图标大小、修复桌面图标层、把被 360 关掉的「显示桌面图标」打开（`HideIcons`）、把跑到屏幕外的图标搬回可视区。不再做任何定时循环检查。`desk-fix.ps1` 默认**不碰 360**（`-Stop360` 需手动加）。
+- **v3.2.1（2026-11-04）**：桌面图标修复更可靠。登录任务改成登录后 45 秒启动，并在之后 30 分钟内每分钟复查一次（图标大小被 360 桌面助手改回去、或桌面图标层又丢了，就自动再修一次）；安装时不再写死 64px，沿用已保存的大小。
+- **v3.2.0（2026-11-04）**：新增「桌面图标修复」。面板多了三个按钮（`桌面修复` / `图标 小 −` / `图标 大 +`）；安装时再注册一个登录任务 `GpuUnlockDeskFix`，每次登录 20 秒后把图标大小恢复成你设定的值、桌面图标层丢了就自动重建。独立脚本 `desk-fix.ps1` 可单独跑（`-IconSize 64` / `-CheckOnly` / `-Stop360`）。起因：装了 360 桌面助手这类接管桌面层的软件后，重启会出现「桌面图标变小、右键菜单失灵」。
+- **v3.1.1（2026-11-01）**：合成单一整合包；修 `enable-test-signing.ps1` 在目标机上报 `signing certificate not found`（原来只认构建机私钥，不认随包的公钥证书）。
+- **v3.1.0（2026-10-31）**：首个发布，面板深色版 + 开机自动挡。
+
+## 许可证
+
+GPL-2.0（全文 `LICENSE`）。第三方组件、NVIDIA 固件的再分发限制见 `NOTICE.md`；
+**固件 blob 不入库**，用 `installer/extract-assets.py` 从官方源码现场生成。
+
+`README.upstream.md` / `README.upstream.zh-CN.md` 是上游 Zagitta/gpu-unlock 的原始说明（Linux 侧），保留作参考。
