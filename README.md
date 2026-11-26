@@ -40,6 +40,7 @@ Details: [CHANGELOG.md](CHANGELOG.md).
 
 Read [INSTALL.txt](INSTALL.txt) first. In short:
 
+0. Use the release archive `TensorUnlock-Win-1.0.0.zip`, not a clone of this repository: the repository does not contain the NVIDIA firmware files in `gpu-unlock/610.43.03/`, the archive does. (From a clone you can regenerate three of the five files with `installer/extract-assets.py`; the other two must come from an NVIDIA driver package.)
 1. Disable Secure Boot in the BIOS.
 2. Run `enable-test-signing.ps1` as administrator, then reboot (a "Test Mode" watermark appears).
 3. Run `installer\install.ps1` as administrator (or `INSTALL.bat`).
@@ -55,6 +56,6 @@ This writes GPU registers through a test-signed kernel driver that can read and 
 
 ## Licence
 
-GPL-2.0 ([LICENSE](LICENSE)). The complete corresponding source for `gpu_unlock.exe` and `gpuunlock.sys` is in [`source/`](source/). The NVIDIA firmware in `gpu-unlock/610.43.03/` is NVIDIA's copyright and is included unmodified with its licence file; no NVIDIA redistribution approval is claimed — see [NOTICE.md](NOTICE.md).
+GPL-2.0 ([LICENSE](LICENSE)). The complete corresponding source for `gpu_unlock.exe` and `gpuunlock.sys` is in [`source/`](source/). The NVIDIA firmware in `gpu-unlock/610.43.03/` is NVIDIA's copyright. It is not stored in this repository; the release archive includes it unmodified with its licence file. No NVIDIA redistribution approval is claimed — see [NOTICE.md](NOTICE.md).
 
 Maintainer of this fork: TensorUnlock-Win contributors.

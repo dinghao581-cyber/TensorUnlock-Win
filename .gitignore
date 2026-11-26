@@ -1,0 +1,4 @@
+# NVIDIA firmware blobs: shipped only in the release archive, never committed
+gpu-unlock/*/*.bin
+# panel screenshots from -Shot
+_shots/
