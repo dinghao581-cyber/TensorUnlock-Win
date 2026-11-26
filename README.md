@@ -24,7 +24,7 @@ At shutdown a scheduled task disables the NVIDIA display adapter, so at the next
 
 On the RTX 3090 the matmul error against an FP64 reference was identical before and after unlocking (same FP32-accumulate numerics, just faster). Register read-back after the boot unlock: SS0 `88888888`, SS1 `00000008`, `unlock read-back: PASS`.
 
-Verified so far: one RTX 3090, one cold boot, a short full-load run. Multi-boot repeatability and long-run stability are not yet established.
+Verified so far: one RTX 3090, two cold boots (both `unlock read-back: PASS`, SS0/SS1 read back as `88888888` / `00000008`) and a short full-load run. Long-run stability and real-model speed-ups are not yet measured.
 
 ## What this fork changes (vs X-WIDE v3.2.2)
 

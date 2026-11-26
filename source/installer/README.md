@@ -150,4 +150,4 @@ Logs: `%ProgramData%\GpuUnlock\` (one `boot-unlock-*.log` per boot)
 - Single GPU only; multi-GPU systems would need each GPU handled by BDF (not implemented)
 - Unlock state after sleep or hibernate is not guaranteed (upstream added a resume hook on Linux; this solution does not)
 - The read-only probe taken just before the boot unlock can log `cannot start the gpuunlock driver (Win32 error 1073)`; the unlock itself still runs and records the at-boot SS0/SS1 values in its own `entry:` line
-- TensorUnlock-Win 1.0.0 has been verified on one RTX 3090 for one cold boot and a short full-load run; multi-boot repeatability and long-run stability are not yet established
+- TensorUnlock-Win 1.0.0 has been verified on one RTX 3090 for two cold boots (both `unlock read-back: PASS`) and a short full-load run; long-run stability is not yet established

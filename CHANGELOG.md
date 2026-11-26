@@ -24,5 +24,5 @@ First release of this fork. Base: X-WIDE GPU-UNLOCK v3.2.2 for Windows (<https:/
 
 ### Known issues
 - The read-only probe run just before the boot unlock can log `cannot start the gpuunlock driver (Win32 error 1073)`; the unlock itself runs normally and logs the at-boot SS0/SS1 in its `entry:` line.
-- Verified on one RTX 3090 for one cold boot and a short full-load run only. Multi-boot repeatability, long-run stability and real-model speed-ups are not yet measured.
+- Verified on one RTX 3090 for two cold boots (both `unlock read-back: PASS`) and a short full-load run only. Long-run stability and real-model speed-ups are not yet measured.
 - X-WIDE's developer tools `source/tools_extract_src.py` and `source/tools_stage_release.ps1` still contain paths from the original author's machine (`F:\...`); they are not used by the installed package.
