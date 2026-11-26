@@ -1,0 +1,152 @@
+﻿TensorUnlock-Win 1.0.0 · Windows Boot-Time Auto-Unlock · Installation Guide
+==========================================================================
+
+TensorUnlock-Win 1.0.0 is a fork of X-WIDE's GPU-UNLOCK v3.2.2 for Windows.
+
+This is a small tool that disables the GPU at shutdown and unlocks it at boot, before the NVIDIA driver binds to it.
+After unlocking, the tensor-core half-rate limit is removed. Measured with bf16_probe.py at 4096x4096:
+   RTX 3090 (TensorUnlock-Win 1.0.0):   BF16 64.21 -> 128.53 TFLOPS, FP16 63.57 -> 128.28 TFLOPS (about 2x)
+   RTX 3090 Ti (X-WIDE, v3.x):          BF16 56.33 -> 116.79 TFLOPS (about 2.07x)
+No VBIOS flashing, no driver replacement, and no patched driver are needed. Install it, then power off and on as usual.
+
+
+1. What is in this package (everything you need is included, nothing else to download)
+--------------------------------------------------------------------------------------
+This folder (the TensorUnlock-Win full bundle) is ready to use after extraction:
+   - gpu_unlock.exe / gpuunlock.sys        unlock program and kernel driver (signed with a test certificate)
+   - gpu-unlock\610.43.03\                 firmware assets (GA102 set of five)
+   - gpuunlock-test.cer                    self-signed certificate (the step 2 script trusts it automatically)
+   - GPU-panel-v3.bat / gpu-panel-v3.ps1   control panel (double-click to open; the ? in the top-right corner has usage notes)
+   - boot-unlock.ps1 / gpu-disable.ps1 / rescue-enable.ps1   the three boot/shutdown task scripts
+   - desk-fix.ps1                          desktop icon fix (use if icons become small after reboot or right-click stops working)
+   - enable-test-signing.ps1               installs the certificate and enables test signing
+   - installer\install.ps1                 installer (registers four scheduled tasks)
+   - installer\uninstall.ps1               uninstaller
+   - INSTALL.bat                           one-click install entry point (elevates automatically)
+   - source\                               full source code (GPL-2.0 requires it to be provided with the binaries)
+
+(If you only want to build it yourself and need only the code, use the source\ folder directly, or use
+ installer\extract-assets.py to extract the firmware from the official NVIDIA source.)
+
+
+2. Requirements (all must be met)
+---------------------------------
+[ ] Windows 10 / 11, 64-bit
+[ ] GPU is GA102: RTX 3090 Ti / 3090 / 3080 Ti / 3080 / A6000 (for other models see section 5)
+[ ] Monitor is connected to this NVIDIA GPU (not only integrated graphics or remote desktop)
+[ ] Secure Boot is disabled in the BIOS
+[ ] You can sign in with an administrator account
+
+
+3. Installation steps (about 10 minutes plus two reboots)
+---------------------------------------------------------
+Step 1: Put the whole folder in a fixed location, for example D:\TensorUnlock-Win\
+        (keep unusual characters out of the path. Do not move or delete this folder after installing:
+         the three scheduled tasks point to its absolute path here.)
+
+Step 2: Right-click enable-test-signing.ps1 and choose "Run as administrator".
+        It does two things for you, with no manual commands:
+          ① Installs gpuunlock-test.cer from the package into
+             Local Computer → Trusted Root Certification Authorities and Trusted Publishers
+             (the script verifies each install by certificate thumbprint)
+          ② bcdedit /set testsigning on
+        The step succeeded only if you see these two lines:
+             [LocalMachine\Root] OK, thumbprint present
+             [LocalMachine\TrustedPublisher] OK, thumbprint present
+             testsigning        Yes
+        If it shows FAILED, you are not running as administrator. Right-click and run it again.
+
+Step 3: Reboot once. After boot, a "Test Mode" watermark appears in the bottom-right corner of the desktop.
+        This is normal and means test signing is active.
+
+Step 4: Run installer\install.ps1 as administrator
+        (or double-click INSTALL.bat).
+        It first runs a self-check. Once all 9 items show [ OK ], it registers four scheduled tasks:
+             GpuUnlockBoot        triggered at boot → unlocks before driver binding
+             GpuUnlockBootRescue  5 minutes after boot (fallback) → forces the GPU on if it has not come up
+             GpuUnlockOff         at shutdown (Event 1074) → disables the GPU so the next boot is cold
+             GpuUnlockDeskFix     45 seconds after logon → restores desktop icons to your chosen size
+                                  (also repairs the icon layer)
+        After installing, it sets desktop icons to 64 px. To change the size, open GPU-panel-v3.bat and
+        click "Icons larger +" or "Icons smaller −" in the second row. Each click is remembered.
+
+Step 5: Verify. Shut down or restart normally from the Start menu (that raises Event 1074, which the
+        shutdown task needs). TensorUnlock-Win 1.0.0 was verified with a normal restart on an RTX 3090.
+        - For 30-60 seconds after boot the display may use the basic resolution, then it recovers. This is normal.
+        - Once on the desktop, double-click GPU-panel-v3.bat. The top should show a green "Unlocked".
+        - Or click "Measure compute" (needs Python with PyTorch, CUDA build; set GPU_UNLOCK_PYTHON
+          to choose the interpreter, otherwise "python" on PATH is used):
+          RTX 3090: BF16 about 128 TFLOPS = unlocked, about 64 = not unlocked.
+          RTX 3090 Ti (X-WIDE): about 116 = unlocked, about 56 = not unlocked.
+        - The register proof is in C:\ProgramData\GpuUnlock\boot-unlock-*.log:
+          "unlock read-back: PASS" and, under "probe after", SS0 = 88888888 and SS1 = 00000008.
+
+Logs are in C:\ProgramData\GpuUnlock\
+    boot-unlock-*.log           boot unlock process and result
+    disable-at-shutdown.log     record of disabling the GPU at shutdown
+    install-check.log           installation self-check
+
+
+4. Uninstall / restore
+----------------------
+1) Run installer\uninstall.ps1 as administrator (add -KeepTasks to only disable, not delete)
+2) To remove the watermark completely: run  bcdedit /set testsigning off  and reboot.
+   (Note: once test signing is off, the driver will not load, and unlocking stops working.)
+
+
+5. Supported hardware (upstream Zagitta/gpu-unlock scope)
+---------------------------------------------------------
+Ampere RTX 30 series : stable (real hardware: RTX 3090 Ti by X-WIDE; RTX 3090 by TensorUnlock-Win 1.0.0; both GA102)
+Ada RTX 40 series    : experimental; try on a small scale first
+Turing RTX 20 series : experimental
+Blackwell RTX 50     : not supported
+
+Firmware is per chip. This package includes only the ga102 set.
+The 3070 / 3060 Ti (ga104) and 3060 (ga106) need their chip found in the NVIDIA open kernel module source
+(not found when checked; you can verify yourself with installer\extract-assets.py --list). Their firmware
+would have to be extracted from the driver, which this package does not do. So this package will not work on a 3060; do not spend time on it.
+
+
+6. FAQ
+------
+Q: Installed, but the panel shows "not unlocked"?
+A: Check C:\ProgramData\GpuUnlock\boot-unlock-*.log:
+   - "NOT COLD: unlock skipped" → the shutdown hook did not take effect and this was a warm boot. Shut down again and power on.
+   - "cannot start the gpuunlock driver" → test signing is not active or the certificate is not trusted. Repeat steps 2 and 3.
+   - "error=-138" → the card was already initialised by the driver, which means a warm boot. Shut down again and retry.
+
+Q: The screen went black and did not come back?
+A: Wait 2 minutes. The fallback task forces the GPU on 5 minutes after boot.
+   If that does not work, hold the power button to power off, then power on. The unlock values are in volatile
+   registers, so unlocking must be run again after a restart.
+
+Q: Could this damage the GPU?
+A: It only writes two speed-select registers plus one PCIe FLR. It does not change the VBIOS, voltage or power limit.
+   The risk is that the display goes black briefly, so this package includes two safeguards: a boot-time
+   fallback and a panel watchdog.
+
+
+7. License
+----------
+This project is GPL-2.0 (see LICENSE and NOTICE.md).
+Original source: Zagitta/gpu-unlock (Linux kernel module, the origin of the whole unlocking technique, GPL-2.0)
+        https://github.com/Zagitta/gpu-unlock
+Windows port: windows-GPU-UNLOCK (EFI pre-boot unlock route, same technical lineage)
+        https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK
+
+Firmware: this package includes the GA102 firmware set in gpu-unlock\610.43.03\ unmodified, together with
+NVIDIA-LICENSE. The firmware is NVIDIA's copyright; no NVIDIA redistribution approval is claimed (see NOTICE.md).
+You can also regenerate three of the files from the NVIDIA open kernel module source with installer\extract-assets.py.
+
+This fork: TensorUnlock-Win 1.0.0 (see README.md, NOTICE.md and CHANGELOG.md)
+Based on: X-WIDE GPU-UNLOCK v3.2.2 for Windows, https://github.com/XWIDE/X-WIDE-gpu-unlock-win (tag v3.2.2, commit 5db350b)
+Original Windows edition author: X-WIDE · Bilibili space.bilibili.com/374064919 · github.com/XWIDE · xiupk@sina.com.cn
+
+---
+
+Inherited from X-WIDE v3.2.2 (desktop icons, 2026-11-05):
+   - The logon task GpuUnlockDeskFix now runs once, 45 seconds after logon (to let desktop helper software such as 360 start first). It does not run a periodic loop.
+   - This release also fixes four things: icon size, the desktop icon layer, "Show desktop icons" (HideIcons) turned off by 360, and icons moved off-screen are moved back into view.
+   - desk-fix.ps1 does not touch the 360 desktop helper by default. Add -Stop360 only if you want to stop it.
+   - Check only, no changes: powershell -File desk-fix.ps1 -Reflow -CheckOnly
+   - History: v3.2.1 used a check every minute for 30 minutes; from v3.2.2 it runs once and no longer stays resident.

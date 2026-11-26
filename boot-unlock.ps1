@@ -1,8 +1,11 @@
+# Modified for TensorUnlock-Win 1.0.0 on 2026-11-26: -Root defaults to the script folder, exit codes logged. Based on X-WIDE GPU-UNLOCK v3.2.2. See CHANGELOG.md.
 # boot-unlock.ps1 - run the cold-path unlock at boot, then guarantee the display comes back.
 # Runs as SYSTEM via a startup scheduled task (GpuUnlockBoot).
 # Flow: wait for the card, cold unlock, re-enable the adapter no matter what, log everything.
 param(
-	[string]$Root = 'F:\gpu-unlock-win\dist',
+	# Default to the folder this script lives in. v3.2.2 defaulted to the original author's
+	# build folder (F:\gpu-unlock-win\dist), so the boot task never found gpu_unlock.exe.
+	[string]$Root = $PSScriptRoot,
 	[int]$TimeoutSec = 240
 )
 $ErrorActionPreference = 'Continue'
@@ -57,6 +60,7 @@ if (Test-Path $exe) {
 	$pre = Join-Path $logDir ("probe-pre-$stamp.txt")
 	try {
 		$pp0 = Start-Process -FilePath $exe -ArgumentList @('real', '--probe') -RedirectStandardOutput $pre -RedirectStandardError ($pre + '.err') -NoNewWindow -PassThru
+		$null = $pp0.Handle  # keep a handle so ExitCode is populated after WaitForExit
 		$pp0.WaitForExit(90000) | Out-Null
 		L ('--- probe before (exit=' + $pp0.ExitCode + ') ---')
 		if (Test-Path $pre) { foreach ($ln in [IO.File]::ReadAllLines($pre)) { if ($ln -match 'SS0|SS1|WPR2|state:') { L ('  | ' + $ln.Trim()) } } }
@@ -66,6 +70,7 @@ if (Test-Path $exe) {
 	$sw = [Diagnostics.Stopwatch]::StartNew()
 	try {
 		$p = Start-Process -FilePath $exe -ArgumentList @('real', '--cold', '--yes') -RedirectStandardOutput $out -RedirectStandardError $err -NoNewWindow -PassThru
+		$null = $p.Handle  # keep a handle so ExitCode is populated after WaitForExit
 		if (-not $p.WaitForExit($TimeoutSec * 1000)) { L 'child timeout, killing'; try { $p.Kill() } catch { } }
 		$sw.Stop()
 		L ('cold unlock exit=' + $p.ExitCode + ' sec=' + [int]$sw.Elapsed.TotalSeconds)
@@ -101,6 +106,7 @@ L ('mode=' + $v.CurrentHorizontalResolution + 'x' + $v.CurrentVerticalResolution
 try {
 	$pb = Join-Path $logDir ("probe-$stamp.txt")
 	$pp = Start-Process -FilePath $exe -ArgumentList @('real', '--probe') -RedirectStandardOutput $pb -RedirectStandardError ($pb + '.err') -NoNewWindow -PassThru
+	$null = $pp.Handle  # keep a handle so ExitCode is populated after WaitForExit
 	$pp.WaitForExit(90000) | Out-Null
 	L '--- probe after ---'
 	if (Test-Path $pb) { foreach ($ln in [IO.File]::ReadAllLines($pb)) { if ($ln -match 'SS0|SS1|WPR2|state:') { L ('  | ' + $ln.Trim()) } } }

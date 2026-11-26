@@ -1,152 +1,153 @@
-# GPU 解锁 · Windows 开机自动挡（冷启动路线）
+# TensorUnlock-Win · Windows Boot-Time Auto-Unlock (Cold-Boot Route)
 
-让 Ampere（RTX 30 系）显卡在 Windows 上打开被厂商锁住的半速张量核（BF16/FP16 算力约 ×2）。
-**不刷 VBIOS、不换驱动、不用 U 盘、不用改引导**：解锁发生在每次开机、NVIDIA 驱动绑定显卡之前。
+TensorUnlock-Win 1.0.0 is a fork of X-WIDE's GPU-UNLOCK v3.2.2 for Windows.
 
-实测数据（RTX 3090 Ti / 驱动 617.42 / Windows 10 19041）：
+It unlocks the vendor-locked half-rate tensor cores on Ampere (RTX 30 series) GPUs under Windows (BF16/FP16 throughput about ×2).
+**No VBIOS flashing, no driver replacement, no USB stick, no bootloader changes.** The unlock happens at every boot, before the NVIDIA driver binds to the GPU.
 
-| 项目 | 未解锁 | 解锁后 |
-|---|---|---|
-| BF16 TFLOPS | 56.33 | **116.79** |
-| FP16 TFLOPS | 57.00 | 117.08 |
-| 倍数 | 1.00× | **2.07×** |
+Measured data (`bf16_probe.py`, 4096×4096, driver 617.42):
+
+| Card / source | BF16 not unlocked | BF16 unlocked | FP16 not unlocked | FP16 unlocked |
+|---|---|---|---|---|
+| RTX 3090, Windows 11 — TensorUnlock-Win 1.0.0 (median of 3) | 64.21 | **128.53** | 63.57 | **128.28** |
+| RTX 3090 Ti, Windows 10 19041 — X-WIDE v3.x | 56.33 | **116.79** | 57.00 | 117.08 |
+
+On the RTX 3090 the matmul error against an FP64 reference was identical before and after unlocking; sustained throughput under a 420 W power limit was 124.06 (BF16) / 121.87 (FP16) TFLOPS.
 
 ---
 
-## 1. 为什么必须在开机时做
+## 1. Why it must run at boot
 
-解锁的方式是往显卡的两个速度选择寄存器写值：
+The unlock works by writing two speed-select registers on the GPU:
 
 ```
 SS0 (+0x82381c) = 0x88888888
 SS1 (+0x823820) = 0x8        (IMLA4)
-然后一次 PCIe FLR
+then one PCIe FLR
 ```
 
-这两个值在**断电后就没了**（易失寄存器），所以每次开机都要重写。
+These values are **lost when power is removed** (they are volatile registers), so they must be rewritten at every boot.
 
-而在 Windows 已经启动之后写是**做不到**的：此时 `nvlddmkm` 已经接管显卡、GSP 固件已经跑起来，写入会被拒绝，工具报
-`unlock_transaction_gfw error=-138 ... firmware_started=0`。
-这一点很多人踩坑——运行中的"一键解锁"永远失败，不是参数问题，是时机问题。
+Writing them after Windows has started is **not possible**. By then `nvlddmkm` has taken over the GPU and the GSP firmware is running, so the write is rejected and the tool reports `unlock_transaction_gfw error=-138 ... firmware_started=0`.
+Many people hit this: an unlock run while Windows is up always fails. It is a timing problem, not a parameter problem.
 
-所以本方案把解锁挪到"驱动绑定之前"：开机时显卡处于禁用状态，没有任何驱动碰过它，`--cold` 路径就能一次成功。
+That is why this solution moves the unlock to before driver binding. At boot the GPU is disabled and no driver has touched it, so the `--cold` path succeeds in one go.
 
-## 2. 工作流程
+## 2. Workflow
 
 ```
-关机 / 重启
-  └─ 任务 GpuUnlockOff（系统日志 Event 1074 触发，SYSTEM）
-       把显示适配器禁用 → 下次开机是"冷态"
+Shutdown / restart
+  └─ Task GpuUnlockOff (triggered by System log Event 1074, runs as SYSTEM)
+       Disables the display adapter → the next boot is a "cold" boot
 
-开机
-  └─ 任务 GpuUnlockBoot（开机触发，SYSTEM）
-       ① 判断显卡是否真的处于禁用态（不是冷态 → 只记日志，绝不动硬件）
-       ② gpu_unlock.exe real --cold --yes   → 写 SS0/SS1 + FLR
-       ③ 无论成败，把显示适配器启用回来 → 屏幕恢复 3840x2160
-       ④ 再跑一次 --probe 记录 SS0/SS1 供核对
+Boot
+  └─ Task GpuUnlockBoot (triggered at boot, runs as SYSTEM)
+       ① Checks whether the GPU is really in the disabled state
+          (if not cold → only logs, never touches the hardware)
+       ② gpu_unlock.exe real --cold --yes   → writes SS0/SS1 + FLR
+       ③ Re-enables the display adapter regardless of the result → the display returns to its normal resolution
+       ④ Runs --probe again and records SS0/SS1 for verification
 
-开机 +5 分钟
-  └─ 任务 GpuUnlockBootRescue（兜底）
-       显卡还不是 OK 就强行启用 / 重启设备
+Boot + 5 minutes
+  └─ Task GpuUnlockBootRescue (fallback)
+       If the GPU is still not OK, forcibly enables it / restarts the device
 ```
 
-失败时的表现：解锁没成，但屏幕一定回来，显卡保持未解锁状态（1× 算力）。
+If unlocking fails, the screen still comes back and the GPU stays un-unlocked (1× compute).
 
-## 3. 支持范围
+## 3. Supported hardware
 
-| 架构 | 代表卡 | 状态 |
+| Architecture | Example cards | Status |
 |---|---|---|
-| Ampere（RTX 30 系） | 3060 ~ 3090 Ti、A6000 | **稳定支持** |
-| Ada（RTX 40 系） | 4060 ~ 4090 | 实验性（上游如此标注），本方案未验证 |
-| Turing（RTX 20 系） | 2060 ~ 2080 Ti | 实验性 |
-| Blackwell（RTX 50 系） | 5060 ~ 5090 | **不支持** |
+| Ampere (RTX 30 series) | 3060 ~ 3090 Ti, A6000 | **Stable** |
+| Ada (RTX 40 series) | 4060 ~ 4090 | Experimental (as labelled upstream); not verified by this solution |
+| Turing (RTX 20 series) | 2060 ~ 2080 Ti | Experimental |
+| Blackwell (RTX 50 series) | 5060 ~ 5090 | **Not supported** |
 
-**卡型差异在固件资产**：解锁需要 5 个 per-chip blob（本包 `gpu-unlock\<版本>\` 目录）。
-随包提供的只有 GA102 一组，所以**现成可用的是 3090 Ti / 3090 / 3080 Ti / 3080 / A6000**（GA102 全系）。
+**Chip differences live in the firmware assets.** Unlocking needs 5 per-chip blobs (in this package, the `gpu-unlock\<version>\` directory).
+The package ships only the GA102 set, so **the ready-to-use cards are the 3090 Ti / 3090 / 3080 Ti / 3080 / A6000** (the full GA102 family).
 
-其它芯片自己抽（`extract-assets.py`，已实测 GA102 与官方源码逐字节一致）：
+Other chips must extract their own blobs with `extract-assets.py` (verified byte-for-byte against the official source for GA102):
 
 ```
 python extract-assets.py --source NVIDIA-kernel-module-source-610.43.03.tar.xz --list
 python extract-assets.py --source NVIDIA-kernel-module-source-610.43.03.tar.xz --chip ga102 --out out
 ```
 
-它会产出其中 3 个（`booter_load_*` / `gsp_boot_*` / `gsp_boot_desc_*`）；
-另 2 个（`gsp_ga10x.bin`、`v67-*.bin`）抽不出来，要从你自己的驱动包里拿。
+It produces 3 of the 5 files (`booter_load_*` / `gsp_boot_*` / `gsp_boot_desc_*`).
+The other 2 (`gsp_ga10x.bin`, `v67-*.bin`) cannot be extracted and must come from your own driver package.
 
-⚠️ **现实约束，别抱错期待**：NVIDIA 只把数据中心卡的生成固件放进开源源码包。
-实测 610.43.03 包里只有 `ga100 / ga102 / ad102 / tu102 / gb100 / gb10b / gb202 / gb20b / gh100 / gr100`，
-**没有 ga104 / ga106 / ga107** —— 也就是说 3070 / 3060 Ti / 3060 这些消费卡，
-光有本脚本还不够，得走「从 Windows 驱动里挖 GSP 固件」的路线，本包未实现、未验证。
-40 系（ad102）在源码里有对应生成文件，但上游把 40 系标为实验性，自己评估风险。
+⚠️ **Reality check: don't expect more than this.** NVIDIA only puts generated firmware for data-center cards into its open-source package.
+Checked against the 610.43.03 package, it contains only `ga100 / ga102 / ad102 / tu102 / gb100 / gb10b / gb202 / gb20b / gh100 / gr100`, and **no ga104 / ga106 / ga107**.
+So for consumer cards such as the 3070 / 3060 Ti / 3060, this script alone is not enough. They would need GSP firmware extracted from the Windows driver, which this package does not implement or verify.
+The 40 series (ad102) has matching generated files in the source, but upstream marks it experimental and leaves the risk assessment to the user.
 
+**No specific driver version is required.** This solution was verified on driver 617.42, which is its main advantage over the "downgrade the driver" route.
 
-**不要求特定驱动版本**——本方案在 617.42 上验证通过，这是它相对"降级驱动"路线的最大优势。
+## 4. Prerequisites
 
-## 4. 前置条件
+1. **Windows 10/11 x64**, administrator rights
+2. **Secure Boot disabled** (in the BIOS)
+3. **Test signing enabled**: run `enable-test-signing.ps1` (it runs `bcdedit /set testsigning on` internally), then reboot
+   - A "Test Mode" watermark appears in the bottom-right corner of the desktop. This is an inherent effect of test signing.
+4. `gpuunlock.sys` must be a signed build (the package provides a self-signed build plus `gpuunlock-test.cer`)
 
-1. **Windows 10/11 x64**，管理员权限
-2. **Secure Boot 关闭**（BIOS 里关）
-3. **测试签名开启**：跑 `enable-test-signing.ps1`（内部执行 `bcdedit /set testsigning on`）后重启
-   - 桌面右下角会出现"测试模式"水印，这是开启测试签名的固有表现
-4. `gpuunlock.sys` 必须是已签名版本（随包提供自签名版 + `gpuunlock-test.cer`）
-
-## 5. 安装
+## 5. Installation
 
 ```
-右键 安装.ps1 → 用 PowerShell 运行     （会自动提权）
+Right-click install.ps1 → Run with PowerShell     (elevates automatically)
 ```
 
-或者先只看检查结果，不动系统：
+Or check the results first without changing the system:
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File .\安装.ps1 -CheckOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -CheckOnly
 ```
 
-装完后：**正常关机，再开机**，进桌面就已经是解锁状态。
+After installing: **shut down normally, then power on**. You will reach the desktop already unlocked.
 
-想看结果：双击 `GPU-panel-v3.bat` 打开面板（状态、算力、任务情况都能看），
-或者直接看日志 `%ProgramData%\GpuUnlock\boot-unlock-*.log`。
+To see the result, double-click `GPU-panel-v3.bat` to open the control panel (status, compute and task state are shown), or read the log directly at `%ProgramData%\GpuUnlock\boot-unlock-*.log`.
 
-## 6. 卸载
+## 6. Uninstall
 
 ```
-右键 卸载.ps1 → 用 PowerShell 运行
+Right-click uninstall.ps1 → Run with PowerShell
 ```
 
-删除三个计划任务、把显卡启用回来。想保留任务只是临时停用：`卸载.ps1 -KeepTasks`。
+This deletes the four scheduled tasks and re-enables the GPU. To keep the tasks and only temporarily disable them, use `uninstall.ps1 -KeepTasks`.
 
-## 7. 文件说明
+## 7. File reference
 
-| 文件 | 作用 |
+| File | Purpose |
 |---|---|
-| `安装.ps1` / `卸载.ps1` | 注册 / 删除计划任务（含环境自检）。解锁程序不在本目录时加 `-Root <目录>` |
-| `extract-assets.py` | 从 NVIDIA 开源内核模块源码抽 Booter / GSP boot 固件（3 个 blob） |
-| `LICENSE` / `NOTICE.md` | GPL-2.0 全文、第三方组件与再分发限制 |
-| `boot-unlock.ps1` | 开机解锁主脚本：冷态判断 → `--cold` 解锁 → 启用显卡 → 复查 |
-| `gpu-disable.ps1` | 关机时禁用显卡 |
-| `rescue-enable.ps1` | 5 分钟兜底：启用显卡 |
-| `gpu-panel-v3.ps1` / `GPU-panel-v3.bat` | 图形面板：状态、测速、一键解锁、恢复原样 |
-| `gpu_unlock.exe` | 解锁引擎（用户态；通过内核驱动做寄存器/FLR） |
-| `gpuunlock.sys` | 内核辅助驱动：BAR 映射、DMA、FLR |
-| `gpu-unlock\<版本>\*.bin` | 固件资产（**不随包分发**，见下） |
-| `bf16_probe.py` | 算力实测脚本（需要 torch + CUDA） |
+| `install.ps1` / `uninstall.ps1` | Register / remove the scheduled tasks (includes an environment self-check). If the unlock program is not in this directory, add `-Root <directory>` |
+| `extract-assets.py` | Extracts the Booter / GSP boot firmware (3 blobs) from the NVIDIA open kernel module source |
+| `LICENSE` / `NOTICE.md` | Full GPL-2.0 text, third-party components and redistribution restrictions |
+| `boot-unlock.ps1` | Main boot unlock script: cold-state check → `--cold` unlock → enable GPU → re-check |
+| `gpu-disable.ps1` | Disables the GPU at shutdown |
+| `rescue-enable.ps1` | 5-minute fallback: enables the GPU |
+| `gpu-panel-v3.ps1` / `GPU-panel-v3.bat` | Control panel: status, Measure compute, Unlock (reboots once), Restore (turn off auto-unlock) |
+| `gpu_unlock.exe` | Unlock engine (user mode; register and FLR operations go through the kernel driver) |
+| `gpuunlock.sys` | Kernel helper driver: BAR mapping, DMA, FLR |
+| `gpu-unlock\<version>\*.bin` | Firmware assets (GA102 set included unmodified with `NVIDIA-LICENSE`, see below) |
+| `bf16_probe.py` | Compute measurement script (needs Python with PyTorch, CUDA build; the panel uses the interpreter in `GPU_UNLOCK_PYTHON` if set, otherwise `python` on PATH) |
 
-日志：`%ProgramData%\GpuUnlock\`（开机每次一个 `boot-unlock-*.log`）
+Logs: `%ProgramData%\GpuUnlock\` (one `boot-unlock-*.log` per boot)
 
-## 8. 许可证与再分发
+## 8. License and redistribution
 
-- 本项目是 [Zagitta/gpu-unlock](https://github.com/Zagitta/gpu-unlock)（**GPL-2.0**）的 Windows 前端与调度层，
-  **整体以 GPL-2.0 发布**：全文见 `LICENSE`，第三方清单见 `NOTICE.md`。
-- 分发二进制（`gpu_unlock.exe` / `gpuunlock.sys`）时必须同时提供完整源码 —— 这两者不随本目录提供，请从上游仓库取。
-- 本包内含的 `extract-assets.py` 依赖 NVIDIA `open-gpu-kernel-modules` 的生成源文件（MIT，`licenses/NVIDIA-MIT.txt`）。
-- **固件 blob（`gpu-unlock\*\*.bin`）是 NVIDIA 的版权文件，不能随包分发**。用 `extract-assets.py` 让使用者自己从官方源码生成。
-- 不提供任何担保。改寄存器属于厂商不支持的操作，出问题自行承担。
+- This project is the Windows front end and scheduling layer for [Zagitta/gpu-unlock](https://github.com/Zagitta/gpu-unlock) (**GPL-2.0**), and **is released as a whole under GPL-2.0**. The full text is in `LICENSE`, and the third-party list is in `NOTICE.md`.
+- When distributing the binaries (`gpu_unlock.exe` / `gpuunlock.sys`), the complete source code must be provided at the same time. In this release it is in the `source\` folder.
+- The bundled `extract-assets.py` depends on the generated source files of NVIDIA `open-gpu-kernel-modules` (MIT, `licenses/NVIDIA-MIT.txt`).
+- **Firmware blobs (`gpu-unlock\*\*.bin`) are copyrighted NVIDIA files.** This release includes the GA102 set unmodified, together with `NVIDIA-LICENSE` (the NVIDIA licence shipped with the 610.43.03 package). NVIDIA has not approved this redistribution and none is claimed; anyone redistributing the package takes that responsibility. Three of the files can be regenerated from the official source with `extract-assets.py`.
+- No warranty is provided. Modifying GPU registers is an operation the vendor does not support; you use it at your own risk.
 
-## 9. 已知限制
+## 9. Known limitations
 
-- 解锁值断电即失效，**每次开机都要重跑**（本方案已自动化）
-- 开机后约 **30–60 秒**屏幕停留在 Windows 基础显示分辨率（1024×768 这类，字很大、略糊，不是花屏），解锁完成自动恢复原分辨率
-- 非常规关机（断电、蓝屏、强制按电源）后，下次开机显卡仍是启用状态 → 保险判断会**跳过解锁**，这一轮保持 1× 算力，不会黑屏；正常关机一次即可恢复自动解锁
-- 只支持单卡；多卡环境需按 BDF 逐个处理（未实现）
-- 睡眠/休眠后解锁状态不保证（上游在 Linux 上加了 resume 钩子，本方案未做）
+- Unlock values are lost when power is removed, so **unlocking must be rerun at every boot** (this solution automates it)
+- For about **30–60 seconds** after boot the screen may stay at Windows' basic display resolution (such as 1024×768: large, slightly blurry text, not a display fault). It returns to the original resolution once unlocking completes
+- After an abnormal shutdown (power loss, blue screen, forced power-off), the GPU is still enabled at the next boot, so the safety check **skips unlocking**. The GPU stays at 1× compute for that boot, and the screen does not go black. One normal shutdown restores automatic unlocking.
+- Single GPU only; multi-GPU systems would need each GPU handled by BDF (not implemented)
+- Unlock state after sleep or hibernate is not guaranteed (upstream added a resume hook on Linux; this solution does not)
+- The read-only probe taken just before the boot unlock can log `cannot start the gpuunlock driver (Win32 error 1073)`; the unlock itself still runs and records the at-boot SS0/SS1 values in its own `entry:` line
+- TensorUnlock-Win 1.0.0 has been verified on one RTX 3090 for one cold boot and a short full-load run; multi-boot repeatability and long-run stability are not yet established

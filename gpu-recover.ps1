@@ -1,4 +1,5 @@
-﻿param(
+﻿# Modified for TensorUnlock-Win 1.0.0 on 2026-11-26: English comments. Based on X-WIDE GPU-UNLOCK v3.2.2. See CHANGELOG.md.
+param(
 	[int]$WaitSec = 900,
 	[switch]$Watch,
 	[switch]$CheckOnly,
@@ -52,7 +53,7 @@ function Get-Gpu {
 }
 function Get-Svc { $s = Get-Service nvlddmkm -ErrorAction SilentlyContinue; if ($s) { return [string]$s.Status } return 'MISSING' }
 function Get-Mode { try { return [RM]::ModeStr() } catch { return '0x0@0' } }
-# 显示器到底有没有收到信号：Active=True 才算亮着（黑屏时这里会是 0／读不到）
+# Whether the monitor is actually receiving a signal: only Active=True counts as on (during a black screen this reads 0 or nothing)
 function Get-Mon {
 	$n = -1
 	try {
@@ -61,7 +62,7 @@ function Get-Mon {
 	} catch { $n = -1 }
 	return $n
 }
-# 屏幕到底是不是黑的：直接抓桌面整屏采样；全黑（最亮都很低）＝用户眼前什么都没有
+# Whether the screen is actually black: sample the whole desktop directly; fully black (even the brightest pixel is very low) means the user sees nothing
 function Get-Black {
 	$r = @{ black=$false; max=0; avg=0 }
 	try {
@@ -168,8 +169,8 @@ if ($TestRecovery) {
 	if ($ok) { exit 0 } else { exit 1 }
 }
 
-# default / -Watch：默认守满整个窗口。-Watch 只在「看到 stop 文件／到时间／被杀」时退出，
-# 绝不因为「现在看着是好的」就提前退出（2026-10-30 的 bug：它一开局看到 healthy 就退了，真黑屏时没人守着）。
+# default / -Watch: keep watching for the full window. -Watch exits only when it sees the stop file, reaches the deadline, or is killed,
+# and never exits early just because the display looks healthy right now (bug on 2026-10-30: it exited as soon as it saw healthy at startup, so nobody was watching when a real black screen happened).
 $stopFile = Join-Path $LogDir 'watch.stop'
 try { if (Test-Path $stopFile) { Remove-Item -LiteralPath $stopFile -Force } } catch { }
 if ($Watch) {

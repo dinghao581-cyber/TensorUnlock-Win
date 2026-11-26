@@ -1,12 +1,13 @@
-﻿param([switch]$CheckOnly, [string]$Root)
+﻿# Modified for TensorUnlock-Win 1.0.0 on 2026-11-26: pass -Root to GpuUnlockBoot, language-independent test-signing check, English messages. Based on X-WIDE GPU-UNLOCK v3.2.2. See CHANGELOG.md.
+param([switch]$CheckOnly, [string]$Root)
 
-# 安装开机自动解锁（冷启动路线）
-# 做的事：注册三个计划任务，让每次开机在驱动绑定前解锁显卡。
-# 不做的事：不下载任何东西、不改 VBIOS、不碰 NVIDIA 驱动文件。
+# Install boot-time auto-unlock (cold-boot path)
+# What it does: registers four scheduled tasks so the GPU is unlocked on every boot, before the driver binds.
+# What it does not do: download anything, modify the VBIOS, or touch NVIDIA driver files.
 
 $ErrorActionPreference = 'Stop'
-# 解锁程序可能在这些位置，按顺序找第一个能找到 gpu_unlock.exe 的：
-#   -Root 指定 → 脚本同级 → 脚本下的 scripts\ → 上一级
+# The unlock program may be in these locations; the first one containing gpu_unlock.exe is used, checked in this order:
+#   -Root value -> script folder -> scripts\ under the script folder -> parent of the script folder
 $candidates = @()
 if ($Root) { $candidates += $Root }
 $candidates += $PSScriptRoot
@@ -40,29 +41,24 @@ function Line([string]$name, [bool]$ok, [string]$extra) {
 }
 
 $fail = 0
-Write-Host '=== 环境检查 ==='
+Write-Host '=== Environment check ==='
 foreach ($f in $need) {
 	$p = Join-Path $root $f
 	$ok = Test-Path $p
 	if (-not $ok) { $fail++ }
-	Line $f $ok $(if ($ok) { '' } else { '缺失' })
+	Line $f $ok $(if ($ok) { '' } else { 'missing' })
 }
 
 $assetDir = Get-ChildItem (Join-Path $root 'gpu-unlock') -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
 $okAsset = [bool]($assetDir -and (Get-ChildItem $assetDir.FullName -Filter '*.bin' | Where-Object { $_.Length -gt 1000 }))
 if (-not $okAsset) { $fail++ }
-Line '固件资产' $okAsset $(if ($assetDir) { $assetDir.Name + ' / ' + (@(Get-ChildItem $assetDir.FullName -Filter '*.bin').Count) + ' 个 bin' } else { '找不到 gpu-unlock 目录' })
+Line 'firmware assets' $okAsset $(if ($assetDir) { $assetDir.Name + ' / ' + (@(Get-ChildItem $assetDir.FullName -Filter '*.bin').Count) + ' bin file(s)' } else { 'gpu-unlock folder not found' })
 
-# bcdedit 的输出是本地化的（中文系统显示"是"），且未提权时读不到。
-$tsOut = (bcdedit.exe /enum '{current}' 2>&1 | Out-String)
-$tsLine = ($tsOut -split "`r?`n" | Where-Object { $_ -match 'testsigning' } | Select-Object -First 1)
-if (-not $tsLine) {
-	Line '测试签名 testsigning' $false '读不到 BCD（请用管理员运行安装.ps1）；确认已跑过 enable-test-signing.ps1 并重启'
-} else {
-	$on = [bool]($tsLine -match '(?i)\b(Yes|On|是)\b')
-	if (-not $on) { $fail++ }
-	Line '测试签名 testsigning' $on $(if ($on) { '已开启' } else { '未开启：先跑同目录的 enable-test-signing.ps1 并重启' })
-}
+# bcdedit output is localized, so read the current boot options instead (independent of system language; readable without elevation).
+$startOpts = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name SystemStartOptions -ErrorAction SilentlyContinue).SystemStartOptions
+$on = [bool]($startOpts -match '(?i)\bTESTSIGNING\b')
+if (-not $on) { $fail++ }
+Line 'test signing (testsigning)' $on $(if ($on) { 'enabled' } else { 'not enabled: run enable-test-signing.ps1 in the same folder, then reboot' })
 
 $sb = try { (Get-CimInstance -Namespace root\wmi -ClassName UEFI_SecureBootVariable -ErrorAction Stop) } catch { $null }
 $okSb = $true
@@ -71,39 +67,40 @@ try {
 	if ($sbOn) { $okSb = $false }
 } catch { $okSb = $true }
 if (-not $okSb) { $fail++ }
-Line 'Secure Boot' $okSb $(if ($okSb) { '已关闭 或 无法查询' } else { '必须先在 BIOS 里关闭' })
+Line 'Secure Boot' $okSb $(if ($okSb) { 'disabled or unable to query' } else { 'must be disabled in BIOS first' })
 
 $g = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'PCI\*' } | Select-Object -First 1
-Line '显卡' ([bool]$g) $(if ($g) { $g.FriendlyName + ' / ' + $g.Status } else { '找不到 PCI 显示设备' })
+Line 'GPU' ([bool]$g) $(if ($g) { $g.FriendlyName + ' / ' + $g.Status } else { 'no PCI display device found' })
 if (-not $g) { $fail++ }
 
 $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($gpu) { Write-Host ('       驱动版本 ' + $gpu.DriverVersion + '（本方案不要求特定版本）') }
+if ($gpu) { Write-Host ('       driver version ' + $gpu.DriverVersion + ' (this approach does not require a specific version)') }
 
 Write-Host ''
-Write-Host '=== 计划任务 ==='
+Write-Host '=== Scheduled tasks ==='
 $tasks = @(
 	@{
 		name = 'GpuUnlockBoot'
-		desc = '开机在驱动绑定前解锁显卡（冷启动路径）'
+		desc = 'unlock the GPU at boot, before the driver binds (cold-boot path)'
 		script = 'boot-unlock.ps1'
+		args = '-Root "' + $root + '"'
 		trigger = '<BootTrigger><Enabled>true</Enabled></BootTrigger>'
 	},
 	@{
 		name = 'GpuUnlockBootRescue'
-		desc = '开机 5 分钟后兜底：显卡没启用就强行启用'
+		desc = 'fallback 5 minutes after boot: force-enable the GPU if it is still disabled'
 		script = 'rescue-enable.ps1'
 		trigger = '<BootTrigger><Enabled>true</Enabled><Delay>PT5M</Delay></BootTrigger>'
 	},
 	@{
 		name = 'GpuUnlockOff'
-		desc = '关机时禁用显卡，让下次开机是冷态'
+		desc = 'disable the GPU at shutdown so the next boot is cold'
 		script = 'gpu-disable.ps1'
 		trigger = '<EventTrigger><Enabled>true</Enabled><Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[EventID=1074]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription></EventTrigger>'
 	},
 	@{
 		name = 'GpuUnlockDeskFix'
-		desc = '登录后跑一次：恢复桌面图标大小、图标层、被隐藏的图标，把跑到屏幕外的图标搬回可视区'
+		desc = 'run once after logon: restore desktop icon size, icon layer and hidden icons, and move icons that are off-screen back into the visible area'
 		script = 'desk-fix.ps1'
 		args = '-Reflow -NoPause'
 		timeLimit = 'PT5M'
@@ -141,40 +138,40 @@ foreach ($t in $tasks) {
 "@
 	$exists = Get-ScheduledTask -TaskName $t.name -ErrorAction SilentlyContinue
 	if ($CheckOnly) {
-		Line $t.name ([bool]$exists) ($t.desc + $(if ($exists) { ' / 已存在' } else { ' / 待创建' }))
+		Line $t.name ([bool]$exists) ($t.desc + $(if ($exists) { ' / exists' } else { ' / to be created' }))
 		continue
 	}
 	try {
 		Register-ScheduledTask -TaskName $t.name -Xml $xml -Force | Out-Null
 		Line $t.name $true ($t.desc)
 	} catch {
-		Line $t.name $false ('注册失败：' + $_.Exception.Message)
+		Line $t.name $false ('registration failed: ' + $_.Exception.Message)
 		$fail++
 	}
 }
 
 Write-Host ''
 if ($CheckOnly) {
-	Write-Host ('检查完毕：FAIL=' + $fail)
+	Write-Host ('Check complete: FAIL=' + $fail)
 	return
 }
 
 if ($fail -gt 0) {
-	Write-Host ('有 ' + $fail + ' 项没通过，先处理上面标 [ -- ] 的项再安装。')
+	Write-Host ('Failed: ' + $fail + ' item(s). Fix the items marked [ -- ] above before installing.')
 	return
 }
 
-Write-Host '安装完成。'
-Write-Host '接下来：正常关机 → 开机时自动解锁 → 进桌面就是解锁状态。'
-Write-Host ('日志目录：' + (Join-Path $env:ProgramData 'GpuUnlock'))
-Write-Host '想撤销：跑同目录的 卸载.ps1'
+Write-Host 'Installation complete.'
+Write-Host 'Next: shut down normally -> auto-unlock at boot -> the desktop is unlocked after login.'
+Write-Host ('Log folder: ' + (Join-Path $env:ProgramData 'GpuUnlock'))
+Write-Host 'To undo: run uninstall.ps1 in the same folder'
 
-# 顺手把桌面图标恢复成已保存的大小（没保存过就是 64px；不重启资源管理器就等下次登录由 GpuUnlockDeskFix 生效）
+# Also restore desktop icons to the saved size (64px if never saved; without restarting Explorer, GpuUnlockDeskFix applies it at the next logon)
 $deskFix = Join-Path $root 'desk-fix.ps1'
 if (Test-Path $deskFix) {
 	Write-Host ''
-	Write-Host '=== 桌面图标 ==='
+	Write-Host '=== Desktop icons ==='
 	$env:GU_NO_PAUSE = '1'
-	try { & $deskFix -NoPause | ForEach-Object { Write-Host ('  ' + $_) } } catch { Write-Host ('  桌面修复跳过：' + $_.Exception.Message) }
-	Write-Host '  图标大小可在 GPU 解锁面板里点「图标 大 + / 图标 小 −」随时调整'
+	try { & $deskFix -NoPause | ForEach-Object { Write-Host ('  ' + $_) } } catch { Write-Host ('  desktop fix skipped: ' + $_.Exception.Message) }
+	Write-Host '  Icon size can be changed at any time in the TensorUnlock-Win panel with the "Icons larger +" / "Icons smaller -" buttons'
 }

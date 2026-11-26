@@ -6,7 +6,7 @@
 
 ![Platform: Windows 10/11 x64](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D6.svg)
 
-**English** · [简体中文](README.zh-CN.md)
+**English**
 
 ## Preview
 

@@ -1,8 +1,9 @@
-﻿param([switch]$KeepTasks)
+﻿# Modified for TensorUnlock-Win 1.0.0 on 2026-11-26: English messages. Based on X-WIDE GPU-UNLOCK v3.2.2. See CHANGELOG.md.
+param([switch]$KeepTasks)
 
-# 卸载开机自动解锁，恢复成普通电脑的状态。
-# 做的事：删掉四个计划任务（含桌面图标修复）；如果显卡处于禁用状态就启用回来。
-# 不会做的事：不改注册表其它地方、不删日志、不碰 NVIDIA 驱动。
+# Uninstall boot-time auto-unlock and restore the computer to its normal state.
+# What it does: deletes the four scheduled tasks (including the desktop icon fix); re-enables the GPU if it is disabled.
+# What it does not do: change other registry locations, delete logs, or touch NVIDIA drivers.
 
 $ErrorActionPreference = 'Continue'
 
@@ -18,12 +19,12 @@ function Say([string]$m) { Write-Host $m }
 if (-not $KeepTasks) {
 	foreach ($t in 'GpuUnlockBoot', 'GpuUnlockOff', 'GpuUnlockBootRescue', 'GpuUnlockDeskFix') {
 		$task = Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
-		if (-not $task) { Say ('[ -- ] ' + $t + '  本来就没有'); continue }
+		if (-not $task) { Say ('[ -- ] ' + $t + '  not present'); continue }
 		try {
 			Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction Stop
-			Say ('[ OK ] ' + $t + '  已删除')
+			Say ('[ OK ] ' + $t + '  deleted')
 		} catch {
-			Say ('[ !! ] ' + $t + '  删除失败：' + $_.Exception.Message)
+			Say ('[ !! ] ' + $t + '  delete failed: ' + $_.Exception.Message)
 		}
 	}
 } else {
@@ -35,20 +36,20 @@ if (-not $KeepTasks) {
 
 $g = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'PCI\*' } | Select-Object -First 1
 if ($g) {
-	Say ('显卡状态：' + $g.Status)
+	Say ('GPU status: ' + $g.Status)
 	if ($g.Status -ne 'OK') {
 		try {
 			Enable-PnpDevice -InstanceId $g.InstanceId -Confirm:$false -ErrorAction Stop
-			Say '[ OK ] 已发送启用命令，稍等几秒显示会回来'
+			Say '[ OK ] Enable command sent; the status should return within a few seconds'
 		} catch {
-			Say ('[ !! ] 启用失败：' + $_.Exception.Message)
-			Say '       手动：设备管理器 → 显示适配器 → 右键报错的卡 → 启用设备'
+			Say ('[ !! ] Enable failed: ' + $_.Exception.Message)
+			Say '       Manual: Device Manager -> Display adapters -> right-click the faulty GPU -> Enable device'
 		}
 	} else {
-		Say '[ -- ] 显卡本来就是启用的，不用动'
+		Say '[ -- ] GPU was already enabled; no action needed'
 	}
 }
 
 Say ''
-Say '已恢复原样：开机不再自动解锁。'
-Say '（当前这一次运行的解锁值在下次重启后失效。）'
+Say 'Restored: the GPU is no longer unlocked automatically at boot.'
+Say '(The unlock values from this run expire after the next reboot.)'
